@@ -1,3 +1,4 @@
+# encoding: utf-8
 import re
 from typing import Dict, List, Optional, Tuple
 from const import AMOUNT_PATTERN, CHN_NUM_CHARS, EDU_LEVELS, SEVERITY_TERMS, CRIME_MAP
@@ -245,7 +246,7 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         if any(record.get("案号") == row.get("案号") for record in records):
             continue
 
-        cats, kws = detect_hits_and_keywords(full_text, case_type, crime_map)
+        cats, kws = detect_hits_and_keywords(full_text, case_type, crime_map    )
         if not cats:
             continue
 
@@ -254,21 +255,27 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         loc = extract_location(full_text) or row.get("所属地区")
         amount = extract_involved_amount(full_text)
         severity = extract_severity(full_text)
+        case_type = row.get("案件类型")
+        law_basis = row.get("法律依据")
         trial_date = row.get("裁判日期")
+        public_date = row.get("公开日期")
+        defendant = row.get("当事人")
         fine_amount = extract_fine_amount(full_text)
 
         records.append(
             {
                 "案号": row.get("案号"),
                 "案由": row.get("案由"),
-                "命中罪名类别": "|".join(cats),
-                "命中关键词": "|".join(kws),
                 "犯罪人的年龄": age,
                 "受教育程度": edu,
                 "案件地点": loc,
                 "涉案金额_元": amount,
                 "案件严重程度": severity,
-                "审判时间": trial_date,
+                "案件类型": case_type,
+                "裁判日期": trial_date,
+                "公开日期": public_date,
+                "法律依据": law_basis,
+                "当事人": defendant,
                 "罚金金额_元": fine_amount,
             }
         )
@@ -279,15 +286,17 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         columns=[
             "案号",
             "案由",
-            "命中罪名类别",
-            "命中关键词",
             "犯罪人的年龄",
             "受教育程度",
             "案件地点",
             "涉案金额_元",
             "案件严重程度",
-            "审判时间",
-            "罚金金额_元",
+            "案件类型",
+            "裁判日期",
+            "公开日期",
+            "法律依据",
+            "当事人",
+            "罚金金额_元"
         ],
     )
     return result_df
@@ -307,55 +316,87 @@ def detect_csv_encoding(path: str, sample_nrows: int = 2000) -> str:
 
 
 def main():
-    input_path = os.path.join(os.path.dirname(__file__), "../2017年01月裁判文书数据.csv")
-    output_path = os.path.join(os.path.dirname(__file__), "./输出结果/2017年数据/2017年01月裁判文书数据.csv")
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    if os.path.exists(output_path):
-        os.remove(output_path)
+    # 路径数组
+    input_paths = [
+        "../2017年裁判文书数据1/2017年01月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年02月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年03月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年04月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年05月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年06月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年07月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年08月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年09月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年10月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年11月裁判文书数据.csv",
+        "../2017年裁判文书数据1/2017年12月裁判文书数据.csv",
+    ]
+    output_paths = [
+        "./输出结果/2017年数据/2017年01月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年02月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年03月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年04月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年05月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年06月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年07月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年08月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年09月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年10月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年11月裁判文书数据.csv",
+        "./输出结果/2017年数据/2017年12月裁判文书数据.csv",
+    ]
 
-    enc = detect_csv_encoding(input_path)
-    usecols = ["案号", "案由", "全文", "裁判日期", "所属地区"]  # 只读必要列，加速IO与序列化
+    usecols = ["案号", "案由", "全文", "裁判日期", "所属地区", "案件类型", "法律依据", "公开日期", "当事人"]  # 只读必要列，加速IO与序列化
     chunksize = 100000  # 可按内存/CPU调大到 8~20万
     workers = max(1, (os.cpu_count() or 4) - 1)
 
-    seen_case_ids = set()
-    header_written = False
+    for in_rel, out_rel in zip(input_paths, output_paths):
+        input_path = os.path.join(os.path.dirname(__file__), in_rel)
+        output_path = os.path.join(os.path.dirname(__file__), out_rel)
 
-    chunks = pd.read_csv(
-        input_path,
-        encoding=enc,
-        chunksize=chunksize,
-        usecols=usecols,
-        dtype=str,  # 避免类型推断带来的开销/NaN陷阱
-    )
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if os.path.exists(output_path):
+            os.remove(output_path)
 
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        # map 会懒加载提交任务，控制内存占用
-        for result_df in ex.map(process_dataframe, chunks, chunksize=1):
-            if result_df is None or result_df.empty:
-                continue
+        enc = detect_csv_encoding(input_path)
 
-            # 全局按案号去重（跨分块）
-            if "案号" in result_df.columns:
-                mask = ~result_df["案号"].isin(seen_case_ids)
-                result_df = result_df[mask]
+        seen_case_ids = set()
+        header_written = False
+
+        chunks = pd.read_csv(
+            input_path,
+            encoding=enc,
+            chunksize=chunksize,
+            usecols=usecols,
+            dtype=str,  # 避免类型推断带来的开销/NaN陷阱
+        )
+
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for result_df in ex.map(process_dataframe, chunks, chunksize=1):
+                if result_df is None or result_df.empty:
+                    continue
+
+                # 按案号去重（在当前文件范围内）
+                if "案号" in result_df.columns:
+                    mask = ~result_df["案号"].isin(seen_case_ids)
+                    result_df = result_df[mask]
+                    if not result_df.empty:
+                        seen_case_ids.update(result_df["案号"].dropna().tolist())
+
                 if not result_df.empty:
-                    seen_case_ids.update(result_df["案号"].dropna().tolist())
+                    result_df.to_csv(
+                        output_path,
+                        mode="a",
+                        index=False,
+                        header=(not header_written),
+                        encoding="utf-8",
+                    )
+                    header_written = True
 
-            if not result_df.empty:
-                result_df.to_csv(
-                    output_path,
-                    mode="a",
-                    index=False,
-                    header=(not header_written),
-                    encoding="utf-8",
-                )
-                header_written = True
-
-    print(f"读取编码: {enc}")
-    print(f"输入: {input_path}")
-    print(f"输出: {output_path}")
+        print(f"读取编码: {enc}")
+        print(f"输入: {input_path}")
+        print(f"输出: {output_path}")
 
 
 if __name__ == "__main__":
