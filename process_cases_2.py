@@ -273,18 +273,48 @@ def extract_birthday(full_text, judge_data):
 
 
 def calculate_age(birth_date, target_date):
-    # 解析日期字符串
-    birth = datetime.strptime(birth_date, "%Y/%m/%d")
-    target = datetime.strptime(target_date, "%Y/%m/%d")
+    """
+    计算年龄，支持多种日期格式
+    """
+    def parse_date(date_str):
+        """解析多种日期格式"""
+        if not isinstance(date_str, str):
+            return None
+        
+        # 支持的日期格式
+        date_formats = [
+            "%Y/%m/%d",      # 2023/1/4
+            "%Y-%m-%d",      # 2021-1-3
+            "%Y年%m月%d日",   # 2021年1月3日
+            "%Y.%m.%d",      # 2021.1.3
+            "%Y/%m/%d",      # 2023/01/04 (补零格式)
+            "%Y-%m-%d",      # 2021-01-03 (补零格式)
+        ]
+        
+        for fmt in date_formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        
+        return None
+    
+    # 解析日期
+    birth = parse_date(birth_date)
+    target = parse_date(target_date)
+    
+    if birth is None or target is None:
+        return None
+    
     # 计算年龄
     age = target.year - birth.year
+    
     # 检查是否过了生日
     # 如果目标日期的月份小于出生月份，或者月份相同但日期小于出生日期
     if (target.month < birth.month) or (target.month == birth.month and target.day < birth.day):
         age -= 1  # 还没过生日，年龄减1
-    else:
-        age += 1  # 已经过了生日，年龄加1
-    return age
+    
+    return age if age >= 0 else None
 # 检测文本和案由中的罪名关键词命中情况
 
 
@@ -423,10 +453,18 @@ def detect_csv_encoding(path: str, sample_nrows: int = 2000) -> str:
 def main():
     # 路径数组
     input_paths = [
-        "./测试数据.csv",
+        "../2017年裁判文书数据1/2017年01月裁判文书数据.csv",
+        "../2018年裁判文书数据1/2018年01月裁判文书数据.csv",
+        "../2019年裁判文书数据1/2019年01月裁判文书数据.csv",
+        "../2020年裁判文书数据1/2020年01月裁判文书数据.csv",
+        "../2021年裁判文书数据1/2021年01月裁判文书数据.csv",
     ]
     output_paths = [
-        "./测试数据_抽取结果.csv",
+        "./输出结果/2017年数据/2017年01月裁判文书数据.csv",
+        "./输出结果/2018年数据/2018年01月裁判文书数据.csv",
+        "./输出结果/2019年数据/2019年01月裁判文书数据.csv",
+        "./输出结果/2020年数据/2020年01月裁判文书数据.csv",
+        "./输出结果/2021年数据/2021年01月裁判文书数据.csv",
     ]
 
     usecols = ["案号", "案由", "全文", "裁判日期", "所属地区",
