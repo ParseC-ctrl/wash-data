@@ -1,4 +1,5 @@
 # encoding: utf-8
+from datetime import datetime
 import re
 from typing import Dict, List, Optional, Tuple
 from const import AMOUNT_PATTERN, CHN_NUM_CHARS, EDU_LEVELS, SEVERITY_TERMS, CRIME_MAP
@@ -7,6 +8,7 @@ import cn2an as cn2an_convert
 import pandas as pd
 import os
 from concurrent.futures import ProcessPoolExecutor
+import cpca
 
 # 读取csv
 
@@ -183,6 +185,44 @@ def extract_severity(text: str) -> Optional[str]:
         return sorted(set(hits), key=lambda x: SEVERITY_TERMS.index(x))[0]
     return None
 
+# 案件地区
+
+
+def extract_area(text: str, address: str, area_type: str) -> Optional[str]:
+    # 归一化输入，防止 float/NaN 触发正则报错
+    addr = address if isinstance(address, str) else ""
+    txt = text if isinstance(text, str) else ""
+    patterns = {
+        "省": r"([\u4e00-\u9fa5]{1,20}省)",
+        # "自治区": r"([\u4e00-\u9fa5]{1,20}自治区|[\u4e00-\u9fa5]{1,20}特别行政区)",
+        "市": r"([\u4e00-\u9fa5]{1,20}市)",
+        "县": r"([\u4e00-\u9fa5]{1,20}(?:自治县|县))",
+        "区": r"([\u4e00-\u9fa5]{1,20}区)",
+        # "旗": r"([\u4e00-\u9fa5]{1,20}旗)",
+    }
+    # 默认回退：匹配以 area_type 结尾的中文地名
+    pattern = patterns.get(
+        area_type, rf"([\u4e00-\u9fa5]{{1,20}}(?:{re.escape(area_type)}))")
+
+    for source_name, source in (("address", addr), ("text", txt)):
+        if not source:
+            continue
+        try:
+            m = re.search(pattern, source)
+            if m:
+                result = cpca.transform([m.group(1)])
+                for row in result.to_dict(orient="records"):
+                    if (area_type == '县'):
+                        return row.get("区") or row.get("地址")
+                    return row.get(area_type)
+        except Exception as e:
+            # 打印上下文，便于定位哪段文本导致失败
+            snippet = source[:120]
+            print(
+                f"[extract_area] error area_type={area_type} source={source_name} pattern={pattern!r} snippet={snippet!r} err={e}")
+            return None
+    return None
+
 # 审判时间
 
 
@@ -205,6 +245,46 @@ def extract_severity(text: str) -> Optional[str]:
 #         return f"{year}年{int(month)}月"
 #     return None
 
+
+def extract_birthday(full_text, judge_data):
+    """
+    提取出生年月，支持多种格式：
+    - 1983年8月23日出生
+    - 1980年12月3日出生
+    - 1988年5月16日出生
+    - 1983年8月23日出生于...
+    """
+    if not isinstance(full_text, str):
+        return None
+
+    # 主要模式：YYYY年M月D日出生
+    patterns = [
+        r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s*出生",
+        r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s*出生于",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            year, month, day = match.groups()
+            if judge_data:
+                return calculate_age(f"{year}/{month}/{day}", judge_data)
+    return None
+
+
+def calculate_age(birth_date, target_date):
+    # 解析日期字符串
+    birth = datetime.strptime(birth_date, "%Y/%m/%d")
+    target = datetime.strptime(target_date, "%Y/%m/%d")
+    # 计算年龄
+    age = target.year - birth.year
+    # 检查是否过了生日
+    # 如果目标日期的月份小于出生月份，或者月份相同但日期小于出生日期
+    if (target.month < birth.month) or (target.month == birth.month and target.day < birth.day):
+        age -= 1  # 还没过生日，年龄减1
+    else:
+        age += 1  # 已经过了生日，年龄加1
+    return age
 # 检测文本和案由中的罪名关键词命中情况
 
 
@@ -246,37 +326,53 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         if any(record.get("案号") == row.get("案号") for record in records):
             continue
 
-        cats, kws = detect_hits_and_keywords(full_text, case_type, crime_map    )
+        cats, kws = detect_hits_and_keywords(full_text, case_type, crime_map)
         if not cats:
             continue
-
-        age = extract_age(full_text)
+        crime = kws[0]
+        if (crime[-1] != "罪"):
+            crime += "罪"
+        age = extract_birthday(full_text, row.get("裁判日期"))
         edu = extract_education(full_text)
-        loc = extract_location(full_text) or row.get("所属地区")
+        loc = extract_location(full_text)
         amount = extract_involved_amount(full_text)
         severity = extract_severity(full_text)
-        case_type = row.get("案件类型")
+        province = extract_area(full_text, row.get("所属地区"), "省")
+        city = extract_area(full_text, row.get("所属地区"), "市")
+        county = extract_area(full_text, row.get("所属地区"), "县")
+        court = row.get("法院")
+        case_type_to = row.get("案件类型")
         law_basis = row.get("法律依据")
         trial_date = row.get("裁判日期")
         public_date = row.get("公开日期")
+        trial_procedure = row.get("审理程序")
+        area = row.get("所属地区")
         defendant = row.get("当事人")
         fine_amount = extract_fine_amount(full_text)
-
         records.append(
             {
                 "案号": row.get("案号"),
                 "案由": row.get("案由"),
+                "法院": court,
+                "省": province,
+                "市": city,
+                "县": county,
+                "审理程序": trial_procedure,
+                "所属地区": area,
+                # "出生年月日": birth_date,
                 "犯罪人的年龄": age,
                 "受教育程度": edu,
                 "案件地点": loc,
-                "涉案金额_元": amount,
                 "案件严重程度": severity,
-                "案件类型": case_type,
                 "裁判日期": trial_date,
                 "公开日期": public_date,
+                "案件类型": case_type_to,
                 "法律依据": law_basis,
                 "当事人": defendant,
+                "涉案金额_元": amount,
                 "罚金金额_元": fine_amount,
+                "罪名": crime,
+                "全文": row.get("全文"),
             }
         )
         print("案号:", row.get("案号"), "加入记录", len(records))
@@ -286,17 +382,26 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         columns=[
             "案号",
             "案由",
+            "法院",
+            "省",
+            "市",
+            "县",
+            "审理程序",
+            "所属地区",
             "犯罪人的年龄",
+            # "出生年月日",
             "受教育程度",
             "案件地点",
-            "涉案金额_元",
             "案件严重程度",
-            "案件类型",
             "裁判日期",
             "公开日期",
+            "案件类型",
             "法律依据",
             "当事人",
-            "罚金金额_元"
+            "涉案金额_元",
+            "罚金金额_元",
+            "罪名",
+            "全文"
         ],
     )
     return result_df
@@ -316,38 +421,16 @@ def detect_csv_encoding(path: str, sample_nrows: int = 2000) -> str:
 
 
 def main():
-
     # 路径数组
     input_paths = [
-        "../2017年裁判文书数据1/2017年01月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年02月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年03月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年04月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年05月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年06月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年07月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年08月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年09月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年10月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年11月裁判文书数据.csv",
-        "../2017年裁判文书数据1/2017年12月裁判文书数据.csv",
+        "./测试数据.csv",
     ]
     output_paths = [
-        "./输出结果/2017年数据/2017年01月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年02月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年03月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年04月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年05月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年06月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年07月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年08月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年09月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年10月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年11月裁判文书数据.csv",
-        "./输出结果/2017年数据/2017年12月裁判文书数据.csv",
+        "./测试数据_抽取结果.csv",
     ]
 
-    usecols = ["案号", "案由", "全文", "裁判日期", "所属地区", "案件类型", "法律依据", "公开日期", "当事人"]  # 只读必要列，加速IO与序列化
+    usecols = ["案号", "案由", "全文", "裁判日期", "所属地区",
+               "案件类型", "法律依据", "公开日期", "当事人", "法院", "审理程序"]  # 只读必要列，加速IO与序列化
     chunksize = 100000  # 可按内存/CPU调大到 8~20万
     workers = max(1, (os.cpu_count() or 4) - 1)
 
