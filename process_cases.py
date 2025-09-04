@@ -107,7 +107,7 @@ def extract_fine_amount(text: str) -> Optional[float]:
     ):
         amt = parse_amount_to_yuan(m.group(3))
         if amt is not None:
-            candidates.append(amt)
+            return amt
 
         # 中文数字金额（如 十万元、五万元、一万五千元）
     if len(candidates) == 0:
@@ -280,7 +280,7 @@ def calculate_age(birth_date, target_date):
         """解析多种日期格式"""
         if not isinstance(date_str, str):
             return None
-        
+
         # 支持的日期格式
         date_formats = [
             "%Y/%m/%d",      # 2023/1/4
@@ -290,30 +290,30 @@ def calculate_age(birth_date, target_date):
             "%Y/%m/%d",      # 2023/01/04 (补零格式)
             "%Y-%m-%d",      # 2021-01-03 (补零格式)
         ]
-        
+
         for fmt in date_formats:
             try:
                 return datetime.strptime(date_str, fmt)
             except ValueError:
                 continue
-        
+
         return None
-    
+
     # 解析日期
     birth = parse_date(birth_date)
     target = parse_date(target_date)
-    
+
     if birth is None or target is None:
         return None
-    
+
     # 计算年龄
     age = target.year - birth.year
-    
+
     # 检查是否过了生日
     # 如果目标日期的月份小于出生月份，或者月份相同但日期小于出生日期
     if (target.month < birth.month) or (target.month == birth.month and target.day < birth.day):
         age -= 1  # 还没过生日，年龄减1
-    
+
     return age if age >= 0 else None
 # 检测文本和案由中的罪名关键词命中情况
 
@@ -334,6 +334,47 @@ def detect_hits_and_keywords(
                 hit_keywords.append(kw)
     return hit_categories, sorted(set(hit_keywords))
 
+# 被告人
+
+
+def extract_defendant(text: str) -> Optional[str]:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    s = normalize_text(text)
+
+    prefixes = ["被告人", "被告单位", "被告", "罪犯"]
+    company_keywords = [
+        "公司", "有限责任公司", "股份有限公司", "分公司", "厂", "银行", "支行", "信用社", "合作社",
+        "事务所", "中心", "协会", "研究院", "医院", "大学", "学院", "集团", "超市", "商店",
+        "科技", "实业", "贸易", "开发", "建设", "房地产", "工程", "咨询", "设计", "运输",
+        "物流", "投资", "餐饮", "酒店"
+    ]
+
+    # 1) 优先匹配公司/单位
+    for p in prefixes:
+        m = re.search(rf"{re.escape(p)}[:：]?\s*([^\s，,。；;：:、]+)", s)
+        if not m:
+            continue
+        cand = m.group(1)
+        # 截断到第一个分隔符；去掉尾部“等/等人/等二人”等
+        cand = re.split(r"[，,。；;：:、\s]", cand)[0]
+        cand = re.sub(r"(等[\u4e00-\u9fa5]{0,3})$", "", cand)
+        if any(kw in cand for kw in company_keywords):
+            return cand if cand else None
+
+    # 2) 匹配个人姓名（2-8个汉字），排除公司关键词
+    for p in prefixes:
+        m = re.search(rf"{re.escape(p)}[:：]?\s*([^\s，,。；;：:、]{{2,8}})", s)
+        if not m:
+            continue
+        cand = m.group(1)
+        cand = re.split(r"[，,。；;：:、\s]", cand)[0]
+        cand = re.sub(r"(等[\u4e00-\u9fa5]{0,3})$", "", cand)
+        if cand and not any(kw in cand for kw in company_keywords):
+            return cand
+
+    return None
+
 
 def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
     # 统一列名（容错：可能存在空格或BOM）
@@ -351,6 +392,19 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         case_type = row.get("案由", "")
         if not full_text:
             continue
+
+        # 仅保留以（YYYY）或(YYYY)开头的案号
+        try:
+            case_id = (row.get("案号") or "").strip()
+            if(len(case_id) > 100):
+                continue
+
+            if not re.match(r"^[（(]\s*\d{4}[）)]", case_id):
+                continue
+        except Exception:
+            continue
+
+        
 
         # 如果records中存在案号相同的行，则跳过
         if any(record.get("案号") == row.get("案号") for record in records):
@@ -378,6 +432,7 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
         trial_procedure = row.get("审理程序")
         area = row.get("所属地区")
         defendant = row.get("当事人")
+        defendant2 = extract_defendant(full_text)
         fine_amount = extract_fine_amount(full_text)
         records.append(
             {
@@ -389,7 +444,6 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
                 "县": county,
                 "审理程序": trial_procedure,
                 "所属地区": area,
-                # "出生年月日": birth_date,
                 "犯罪人的年龄": age,
                 "受教育程度": edu,
                 "案件地点": loc,
@@ -401,6 +455,7 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
                 "当事人": defendant,
                 "涉案金额_元": amount,
                 "罚金金额_元": fine_amount,
+                "被告人": defendant2,
                 "罪名": crime,
                 "全文": row.get("全文"),
             }
@@ -419,7 +474,6 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
             "审理程序",
             "所属地区",
             "犯罪人的年龄",
-            # "出生年月日",
             "受教育程度",
             "案件地点",
             "案件严重程度",
@@ -431,6 +485,7 @@ def process_dataframe(df) -> "DataFrame":  # type: ignore[name-defined]
             "涉案金额_元",
             "罚金金额_元",
             "罪名",
+            "被告人",
             "全文"
         ],
     )
@@ -453,41 +508,48 @@ def detect_csv_encoding(path: str, sample_nrows: int = 2000) -> str:
 def main():
     # 路径数组
     input_paths = [
-        # "../2019年裁判文书数据1/2019年02月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年03月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年04月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年05月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年06月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年07月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年08月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年09月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年10月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年11月裁判文书数据.csv",
-        # "../2019年裁判文书数据1/2019年12月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年02月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年03月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年04月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年05月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年06月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年07月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年08月裁判文书数据.csv",
-        "../2020年裁判文书数据1/2020年09月裁判文书数据.csv",
-        "../2020年裁判文书数据1/2020年10月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年11月裁判文书数据.csv",
-        # "../2020年裁判文书数据1/2020年12月裁判文书数据.csv",
+        '../2014年裁判文书数据1/2014年01月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年02月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年03月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年04月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年05月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年06月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年07月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年08月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年09月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年10月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年11月裁判文书数据.csv',
+        '../2014年裁判文书数据1/2014年12月裁判文书数据.csv'
+        # './测试数据.csv',
+        # './测试数据2.csv'
+        # './输出结果/2017年数据/2017年12月裁判文书数据.csv'
+        # './汇总结果/2017/2017年数据.csv'
+        # './汇总结果/2018/2018年数据.csv'
+        # './汇总结果/2019/2019年数据.csv',
+        # './汇总结果/2020/2020年数据.csv',
+        # './汇总结果/2021/2021年数据.csv'
     ]
     output_paths = [
-        # "./输出结果/2020年数据/2020年02月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年03月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年04月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年05月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年06月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年07月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年08月裁判文书数据.csv",
-        "./输出结果/2020年数据/2020年09月裁判文书数据.csv",
-        "./输出结果/2020年数据/2020年10月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年11月裁判文书数据.csv",
-        # "./输出结果/2020年数据/2020年12月裁判文书数据.csv",
+        './输出结果/2014年数据/2014年01月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年02月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年03月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年04月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年05月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年06月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年07月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年08月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年09月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年10月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年11月裁判文书数据.csv',
+        './输出结果/2014年数据/2014年12月裁判文书数据.csv',
+        # './测试数据_抽取结果.csv',
+        # './测试数据2_抽取结果.csv'
+        # './输出结果/2017年数据/2017年12月裁判文书数据_抽取结果.csv'
+        # './汇总结果/2017/2017年数据_抽取结果.csv'
+        # './汇总结果/2018/2018年数据_抽取结果.csv'
+        # './汇总结果/2019/2019年数据_抽取结果.csv',
+        # './汇总结果/2020/2020年数据_抽取结果.csv',
+        # './汇总结果/2021/2021年数据_抽取结果.csv'
     ]
 
     usecols = ["案号", "案由", "全文", "裁判日期", "所属地区",
