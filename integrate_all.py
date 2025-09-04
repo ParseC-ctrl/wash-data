@@ -124,8 +124,8 @@ def main():
     直接在代码中指定输入/输出与并发度的入口。
     - 这里示例：合并 `./输出结果/2021年数据` 目录下全部 CSV，输出到同级目录。
     """
-    inputs = [os.path.join(os.path.dirname(__file__), './输出结果/2017年数据')]
-    output = os.path.join(os.path.dirname(__file__), './输出结果/2017年裁判文书数据.csv')
+    inputs = [os.path.join(os.path.dirname(__file__), './输出结果/2021年数据')]
+    output = os.path.join(os.path.dirname(__file__), './汇总结果/2021/2021年数据.csv')
     # 并发：CPU 核心数减 1（至少为 1）
     workers = max(1, (os.cpu_count() or 4) - 1)
     concat_csv(
